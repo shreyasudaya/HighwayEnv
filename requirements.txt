@@ -1,0 +1,11 @@
+stable_baselines3
+gymnasium
+tensorboard
+matplotlib
+numpy
+torch
+opencv-python
+pygame
+scipy
+pandas
+"gymnasium[other]"
