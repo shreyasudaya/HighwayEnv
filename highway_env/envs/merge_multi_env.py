@@ -8,7 +8,7 @@ from highway_env.road.lane import LineType, SineLane, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.controller import ControlledVehicle
 from highway_env.vehicle.objects import Obstacle
-
+from highway_env.vehicle.kinematics import Vehicle
 
 class MultiMergeEnv(AbstractEnv):
     """
@@ -38,6 +38,7 @@ class MultiMergeEnv(AbstractEnv):
                 "centering_position": [0.5, 0.5],  # Center screen on road, not ego
                 "scaling": 2.5,  # Lower scaling => zoomed out (default ~5.5)
                 "show_trajectories": False,
+                "offroad_terminal": False,
             }
         )
         return cfg
@@ -51,11 +52,10 @@ class MultiMergeEnv(AbstractEnv):
             "high_speed_reward": self.config.get("high_speed_reward", 0.2),
             "lane_change_reward": self.config.get("lane_change_reward", -0.05),
             "merging_speed_reward": self.config.get("merging_speed_reward", -0.5),
-            "on_road_reward": 0.5,
+            "off_road_reward": self.config.get("off_road_reward", -2.0),  # strong penalty
         }
         reward = sum(weights[k] * rewards.get(k, 0) for k in rewards)
-        return utils.lmap(reward, [-2, 2], [0, 1])  # normalize to 0–1
-
+        return utils.lmap(reward, [-2, 2], [0, 1])
 
     def _rewards(self, action: int) -> dict[str, float]:
         scaled_speed = utils.lmap(
@@ -63,8 +63,9 @@ class MultiMergeEnv(AbstractEnv):
         )
 
         # Check if the ego-vehicle is on a valid lane
-        in_lane = self.road.network.get_closest_lane_index(self.vehicle.position, None)[0] is not None
-
+        lane_index = self.road.network.get_closest_lane_index(self.vehicle.position, None)
+        in_lane = lane_index[0] is not None
+        off_road = not in_lane
         return {
             "collision_reward": self.vehicle.crashed,
             "right_lane_reward": self.vehicle.lane_index[2] / 3,  # scaled by 4 lanes (0–3)
@@ -75,14 +76,17 @@ class MultiMergeEnv(AbstractEnv):
                 for v in self.road.vehicles
                 if isinstance(v, ControlledVehicle)
             ),
-            # Reward for staying inside road boundaries
-            "on_road_reward": 1.0 if in_lane else -1.0,  # +1 if in a lane, -1 if off-road
+            "off_road_reward": float(off_road),
         }
     
     def _is_terminated(self) -> bool:
-        """The episode is over when a collision occurs or when the access ramp has been passed."""
-        return self.vehicle.crashed or bool(self.vehicle.position[0] > 370)
-
+        """End if ego crashes or drives off road (if enabled)."""
+        return (
+            self.vehicle.crashed
+            or self.config.get("offroad_terminal", False) and not self.vehicle.on_road
+            or self.vehicle.position[0] > 370
+        )
+    
     def _is_truncated(self) -> bool:
         return False
 
@@ -134,7 +138,7 @@ class MultiMergeEnv(AbstractEnv):
             "b", "c",
             SineLane(
                 lane3_start, lane3_end,
-                amplitude=lane_w,                  # stronger lateral shift
+                amplitude=lane_w/2,                  # stronger lateral shift
                 pulsation=np.pi / merge1,          # one smooth curve
                 phase=0,
                 line_types=[n, c],
@@ -159,7 +163,7 @@ class MultiMergeEnv(AbstractEnv):
             "c", "d",
             SineLane(
                 lane2_start, lane2_end,
-                amplitude=lane_w,
+                amplitude=lane_w/2,
                 pulsation=np.pi / merge2,
                 phase=0,
                 line_types=[n, c],
@@ -185,55 +189,88 @@ class MultiMergeEnv(AbstractEnv):
         two_lane_section = [("c", "d", i) for i in range(2)]        # after merge
         used_positions = []
 
-        # Lane probabilities: bias toward rightmost lanes in the 4-lane part
-        four_lane_weights = np.array([0.1, 0.2, 0.35, 0.35])  # outer lanes favored
-        two_lane_weights = np.array([0.5, 0.5])               # balanced for after merge
+        # Lane probabilities
+        four_lane_weights = np.array([0.1, 0.2, 0.35, 0.35])
+        two_lane_weights = np.array([0.5, 0.5])
 
-        def sample_position(section="four"):
+        def sample_valid_position(section="four", vehicle_class=None, max_attempts=50):
             if section == "four":
                 lanes = four_lane_section
                 weights = four_lane_weights
-                x_range = (0, 150)  # spawn before merge
+                x_range = (0, 150)
             else:
                 lanes = two_lane_section
                 weights = two_lane_weights
-                x_range = (270, 400)  # spawn after merge (after taper)
+                x_range = (270, 400)
 
-            for _ in range(50):  # retry to avoid overlaps
+            for _ in range(max_attempts):
                 lane_idx = lanes[self.np_random.choice(len(lanes), p=weights)]
                 longitudinal = self.np_random.uniform(*x_range)
-                if all(
-                    not (ln == lane_idx and abs(longitudinal - pos) < 12)
+
+                if any(
+                    ln == lane_idx and abs(longitudinal - pos) < 12
                     for ln, pos in used_positions
                 ):
-                    used_positions.append((lane_idx, longitudinal))
-                    return road.network.get_lane(lane_idx).position(longitudinal, 0)
+                    continue  # Too close to existing vehicle
 
-            # Fallback (crowded)
+                lane = road.network.get_lane(lane_idx)
+                position = lane.position(longitudinal, 0)
+
+                # Create a dummy vehicle to test on_road status
+                test_vehicle = (vehicle_class or Vehicle)(road, position)
+                if not test_vehicle.on_road:
+                    continue  # Skip off-road placements
+
+                used_positions.append((lane_idx, longitudinal))
+                return lane_idx, longitudinal
+
+            # Fallback if all attempts fail
             lane_idx = lanes[self.np_random.choice(len(lanes), p=weights)]
             longitudinal = self.np_random.uniform(*x_range)
             used_positions.append((lane_idx, longitudinal))
-            return road.network.get_lane(lane_idx).position(longitudinal, 0)
+            return lane_idx, longitudinal
 
-        # Divide vehicles: ~70% before merge, ~30% after merge
+
         before_count = int(total * 0.7)
         after_count = total - before_count
 
-        # Controlled agents — always spawn in 4-lane section (before merge)
+        # Controlled vehicles — always in 4-lane section
         for _ in range(controlled):
-            pos = sample_position(section="four")
+            lane_id, long = sample_valid_position("four")
+            lane = road.network.get_lane(lane_id)
             speed = self.np_random.uniform(25, 35)
-            v = self.action_type.vehicle_class(road, pos, speed=speed)
+            v = self.action_type.vehicle_class(road, lane.position(long, 0), speed=speed)
+            road.vehicles.append(v)
             self.controlled_vehicles.append(v)
+        
+        for v in self.road.vehicles:
+            if not isinstance(v, ControlledVehicle):
+                lane = v.lane
+                if lane is None:
+                    continue
+                # Get longitudinal and lateral coordinates of vehicle relative to lane
+                s, d = lane.local_coordinates(v.position)
+                # Clamp lateral offset to lane width boundaries (e.g., ±lane_width/2)
+                max_lateral_offset = lane.width / 2
+                if abs(d) > max_lateral_offset:
+                    d = np.clip(d, -max_lateral_offset, max_lateral_offset)
+                    # Set position back to the clamped point on lane centerline
+                    v.position = lane.position(s, d)
+
+        # Other vehicles before merge
+        for _ in range(before_count - controlled):
+            lane_id, long = sample_valid_position("four")
+            lane = road.network.get_lane(lane_id)
+            speed = self.np_random.uniform(20, 35)
+            v = other_type(road, lane.position(long, 0), speed=speed)
+            v.randomize_behavior()
             road.vehicles.append(v)
 
-        # Other traffic — split between before and after merge
-        for _ in range(before_count - controlled):
-            pos = sample_position(section="four")
-            speed = self.np_random.uniform(20, 35)
-            road.vehicles.append(other_type(road, pos, speed=speed))
-
+        # Other vehicles after merge
         for _ in range(after_count):
-            pos = sample_position(section="after")
+            lane_id, long = sample_valid_position("after")
+            lane = road.network.get_lane(lane_id)
             speed = self.np_random.uniform(20, 35)
-            road.vehicles.append(other_type(road, pos, speed=speed))
+            v = other_type(road, lane.position(long, 0), speed=speed)
+            v.randomize_behavior()
+            road.vehicles.append(v)

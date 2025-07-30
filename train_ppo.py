@@ -11,7 +11,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 
 
 # --- 2. Training Config ---
-TOTAL_TIMESTEPS = 2_000
+TOTAL_TIMESTEPS = 20_000
 MODEL_PATH = "ppo_multimerge.zip"
 VIDEO_DIR = "./videos"
 
