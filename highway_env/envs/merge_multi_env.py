@@ -35,8 +35,8 @@ class MultiMergeEnv(AbstractEnv):
                 "other_vehicles_type": "highway_env.vehicle.behavior.IDMVehicle",
                 "screen_width": 1600,
                 "screen_height": 400,
-                "centering_position": [0.5, 0.5],  # Center screen on road, not ego
-                "scaling": 2.5,  # Lower scaling => zoomed out (default ~5.5)
+                "centering_position": [0.3, 0.5],  # Center screen on road, not ego
+                "scaling": 4.5,  # Lower scaling => zoomed out (default ~5.5)
                 "show_trajectories": False,
                 "offroad_terminal": False,
             }
@@ -104,10 +104,10 @@ class MultiMergeEnv(AbstractEnv):
         lane_w = StraightLane.DEFAULT_WIDTH
 
         # Segment lengths
-        before = 150         # straight section (4 lanes)
+        before = 300         # straight section (4 lanes)
         merge1 = 60          # sharper merge zone (4 → 3 lanes)
         merge2 = 60          # sharper merge zone (3 → 2 lanes)
-        after = 150          # final 2 lanes
+        after = 300          # final 2 lanes
 
         c, s, n = LineType.CONTINUOUS_LINE, LineType.STRIPED, LineType.NONE
 
@@ -142,6 +142,7 @@ class MultiMergeEnv(AbstractEnv):
                 pulsation=np.pi / merge1,          # one smooth curve
                 phase=0,
                 line_types=[n, c],
+                width=lane_w,
             ),
         )
 
@@ -167,6 +168,7 @@ class MultiMergeEnv(AbstractEnv):
                 pulsation=np.pi / merge2,
                 phase=0,
                 line_types=[n, c],
+                width=lane_w,
             ),
         )
 

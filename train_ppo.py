@@ -11,7 +11,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 
 
 # --- 2. Training Config ---
-TOTAL_TIMESTEPS = 20_000
+TOTAL_TIMESTEPS = 5_000
 MODEL_PATH = "ppo_multimerge.zip"
 VIDEO_DIR = "./videos"
 
@@ -21,8 +21,8 @@ def make_env():
         "multimerge-v0",
         render_mode=None,
         config={
-            "controlled_vehicles": 3,
-            "vehicles_count": 12,
+            "controlled_vehicles": 10,
+            "vehicles_count": 40,
         },
     )
     return env
@@ -65,7 +65,7 @@ def record_video(model, video_length=300, filename="ppo_multimerge_demo.mp4"):
             "multimerge-v0",
             render_mode="rgb_array",  # Required for VecVideoRecorder
             config={
-                "controlled_vehicles": 3,
+                "controlled_vehicles": 5,
                 "vehicles_count": 10,
             },
         )

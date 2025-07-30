@@ -148,6 +148,7 @@ jupyter_execute
 
 racetrack_oval_ppo/
 ppo_multimerge_tb/
+dql_multimerge_tb/
 
 videos/
 *.mp4

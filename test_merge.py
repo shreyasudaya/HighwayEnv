@@ -54,8 +54,8 @@ env = gym.make(
     "multimerge-v0",
     render_mode="rgb_array",
     config={
-        "controlled_vehicles": 3,
-        "vehicles_count": 10,
+        "controlled_vehicles": 10,
+        "vehicles_count": 40,
     },
 )
 
