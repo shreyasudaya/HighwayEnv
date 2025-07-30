@@ -113,21 +113,24 @@ class MultiMergeEnv(AbstractEnv):
 
         # --- Section A->B: 4 parallel lanes ---
         for i in range(4):
+            left_line = c if i == 0 else n                         # outer left boundary solid
+            right_line = s if i < 3 else c                         # inter-lane = STRIPED, outer right = solid
             net.add_lane(
                 "a", "b",
                 StraightLane(
                     [0, lane_w * i], [before, lane_w * i],
-                    line_types=[c, s] if i == 0 else [n, c],
+                    line_types=[left_line, right_line],
                 ),
             )
-
         # --- Section B->C: Lane 3 merges into lane 2 ---
         for i in range(3):  # lanes 0,1,2 stay
+            left_line = c if i == 0 else n                         # outer left boundary solid
+            right_line = s if i < 3 else c    
             net.add_lane(
                 "b", "c",
                 StraightLane(
                     [before, lane_w * i], [before + merge1, lane_w * i],
-                    line_types=[c, s] if i == 0 else [n, c],
+                    line_types=[left_line, right_line],
                 ),
             )
 
@@ -148,12 +151,14 @@ class MultiMergeEnv(AbstractEnv):
 
         # --- Section C->D: Lane 2 merges into lane 1 ---
         for i in range(2):  # lanes 0,1 continue
+            left_line = c if i == 0 else n                         # outer left boundary solid
+            right_line = s if i < 3 else c    
             net.add_lane(
                 "c", "d",
                 StraightLane(
                     [before + merge1, lane_w * i],
                     [before + merge1 + merge2 + after, lane_w * i],
-                    line_types=[c, s] if i == 0 else [n, c],
+                    line_types=[left_line, right_line],
                 ),
             )
 
