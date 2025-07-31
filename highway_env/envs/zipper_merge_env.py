@@ -10,7 +10,7 @@ from highway_env.vehicle.controller import ControlledVehicle
 from highway_env.vehicle.objects import Obstacle
 from highway_env.vehicle.kinematics import Vehicle
 
-class MultiMergeEnv(AbstractEnv):
+class LaneDropMergeEnv(AbstractEnv):
     """
     A highway merge negotiation environment.
 
@@ -24,8 +24,8 @@ class MultiMergeEnv(AbstractEnv):
         cfg = super().default_config()
         cfg.update(
             {
-                "vehicles_count": 5,
-                "controlled_vehicles": 2,
+                "vehicles_count": 15,
+                "controlled_vehicles": 3,
                 "collision_reward": -1,
                 "right_lane_reward": 0.1,
                 "high_speed_reward": 0.2,
@@ -62,23 +62,34 @@ class MultiMergeEnv(AbstractEnv):
             self.vehicle.speed, self.config["reward_speed_range"], [0, 1]
         )
 
-        # Check if the ego-vehicle is on a valid lane
-        lane_index = self.road.network.get_closest_lane_index(self.vehicle.position, None)
-        in_lane = lane_index[0] is not None
-        off_road = not in_lane
+        # Collision penalty (large negative)
+        collision_penalty = -10.0 if self.vehicle.crashed else 0.0
+
+        # Lane index scaled (assuming right lane is lane 1 before merge)
+        right_lane_reward = 1.0 if self.vehicle.lane_index[2] == 1 else 0.0
+
+        # Lane change penalty (assume 0 = keep lane, 1 or 2 = lane change)
+        lane_change_penalty = -0.1 if action in [0, 2] else 0.0
+
+        # Altruistic merging speed penalty: ego should slow down to help others merge
+        merging_speed_penalty = sum(
+            max(0, (v.speed - self.vehicle.speed) / v.target_speed)
+            for v in self.road.vehicles
+            if isinstance(v, ControlledVehicle) and v is not self.vehicle
+        )
+
+        # Off-road penalty (strong)
+        off_road_penalty = -5.0 if not self.vehicle.on_road else 0.0
+
         return {
-            "collision_reward": self.vehicle.crashed,
-            "right_lane_reward": self.vehicle.lane_index[2] / 3,  # scaled by 4 lanes (0–3)
-            "high_speed_reward": scaled_speed,
-            "lane_change_reward": action in [0, 2],
-            "merging_speed_reward": sum(  # Altruistic penalty
-                (v.target_speed - v.speed) / v.target_speed
-                for v in self.road.vehicles
-                if isinstance(v, ControlledVehicle)
-            ),
-            "off_road_reward": float(off_road),
+            "collision_reward": collision_penalty,
+            "right_lane_reward": right_lane_reward,
+            "high_speed_reward": scaled_speed * 0.2,
+            "lane_change_reward": lane_change_penalty,
+            "merging_speed_reward": -merging_speed_penalty,  # Negative if ego too fast
+            "off_road_reward": off_road_penalty,
         }
-    
+
     def _is_terminated(self) -> bool:
         """End if ego crashes or drives off road (if enabled)."""
         return (
@@ -96,85 +107,55 @@ class MultiMergeEnv(AbstractEnv):
 
     def _make_road(self) -> None:
         """
-        Build a 4-to-2 lane zipper merge:
-        - 4 lanes before merge
-        - Lanes 3 and 2 merge into lanes 2 and 1, respectively.
+        Build a 2-to-1 lane zipper merge:
+        - 2 lanes before merge
+        - Lane 1 merges into lane 0
         """
         net = RoadNetwork()
         lane_w = StraightLane.DEFAULT_WIDTH
 
         # Segment lengths
-        before = 300         # straight section (4 lanes)
-        merge1 = 60          # sharper merge zone (4 → 3 lanes)
-        merge2 = 60          # sharper merge zone (3 → 2 lanes)
-        after = 300          # final 2 lanes
+        before = 300
+        merge = 60
+        after = 300
 
         c, s, n = LineType.CONTINUOUS_LINE, LineType.STRIPED, LineType.NONE
 
-        # --- Section A->B: 4 parallel lanes ---
-        for i in range(4):
-            left_line = c if i == 0 else n                         # outer left boundary solid
-            right_line = s if i < 3 else c                         # inter-lane = STRIPED, outer right = solid
+        # --- Section A->B: 2 parallel lanes ---
+        for i in range(2):
+            left_line = c if i == 0 else n
+            right_line = s if i == 0 else c
             net.add_lane(
                 "a", "b",
                 StraightLane(
                     [0, lane_w * i], [before, lane_w * i],
                     line_types=[left_line, right_line],
-                ),
-            )
-        # --- Section B->C: Lane 3 merges into lane 2 ---
-        for i in range(3):  # lanes 0,1,2 stay
-            left_line = c if i == 0 else n                         # outer left boundary solid
-            right_line = s if i < 3 else c    
-            net.add_lane(
-                "b", "c",
-                StraightLane(
-                    [before, lane_w * i], [before + merge1, lane_w * i],
-                    line_types=[left_line, right_line],
-                ),
+                )
             )
 
-        # Sharper merge for lane 3 into lane 2 (steeper sine curve)
-        lane3_start = [before, lane_w * 3]
-        lane3_end = [before + merge1, lane_w * 2]
+        # --- Section B->C: Lane 1 merges into lane 0 ---
+        # Lane 0 continues straight
+        net.add_lane(
+            "b", "c",
+            StraightLane(
+                [before, lane_w * 0], [before + merge + after, lane_w * 0],
+                line_types=[c, c],
+            )
+        )
+
+        # Lane 1 merges into lane 0 using sine curve
+        lane1_start = [before, lane_w * 1]
+        lane1_end = [before + merge, lane_w * 0]
         net.add_lane(
             "b", "c",
             SineLane(
-                lane3_start, lane3_end,
-                amplitude=lane_w/2,                  # stronger lateral shift
-                pulsation=np.pi / merge1,          # one smooth curve
+                lane1_start, lane1_end,
+                amplitude=lane_w / 4,  # reduce for smoother transition
+                pulsation=np.pi / (merge * 2),  # slower curve
                 phase=0,
                 line_types=[n, c],
                 width=lane_w,
-            ),
-        )
-
-        # --- Section C->D: Lane 2 merges into lane 1 ---
-        for i in range(2):  # lanes 0,1 continue
-            left_line = c if i == 0 else n                         # outer left boundary solid
-            right_line = s if i < 3 else c    
-            net.add_lane(
-                "c", "d",
-                StraightLane(
-                    [before + merge1, lane_w * i],
-                    [before + merge1 + merge2 + after, lane_w * i],
-                    line_types=[left_line, right_line],
-                ),
             )
-
-        # Lane 2 merges into lane 1 (also steeper)
-        lane2_start = [before + merge1, lane_w * 2]
-        lane2_end = [before + merge1 + merge2, lane_w * 1]
-        net.add_lane(
-            "c", "d",
-            SineLane(
-                lane2_start, lane2_end,
-                amplitude=lane_w/2,
-                pulsation=np.pi / merge2,
-                phase=0,
-                line_types=[n, c],
-                width=lane_w,
-            ),
         )
 
         self.road = Road(
@@ -192,22 +173,22 @@ class MultiMergeEnv(AbstractEnv):
         other_type = utils.class_from_path(self.config["other_vehicles_type"])
 
         # Lane sections
-        four_lane_section = [("a", "b", i) for i in range(4)]       # before merge
-        two_lane_section = [("c", "d", i) for i in range(2)]        # after merge
+        two_lane_section = [("a", "b", i) for i in range(2)]
+        one_lane_section = [("b", "c", 0)]  # final merged lane is only lane 0
         used_positions = []
 
         # Lane probabilities
-        four_lane_weights = np.array([0.1, 0.2, 0.35, 0.35])
         two_lane_weights = np.array([0.5, 0.5])
+        one_lane_weights = np.array([1.0])
 
-        def sample_valid_position(section="four", vehicle_class=None, max_attempts=50):
-            if section == "four":
-                lanes = four_lane_section
-                weights = four_lane_weights
-                x_range = (0, 150)
-            else:
+        def sample_valid_position(section="two", vehicle_class=None, max_attempts=50):
+            if section == "two":
                 lanes = two_lane_section
                 weights = two_lane_weights
+                x_range = (0, 150)
+            else:
+                lanes = one_lane_section
+                weights = one_lane_weights
                 x_range = (270, 400)
 
             for _ in range(max_attempts):
@@ -218,62 +199,53 @@ class MultiMergeEnv(AbstractEnv):
                     ln == lane_idx and abs(longitudinal - pos) < 12
                     for ln, pos in used_positions
                 ):
-                    continue  # Too close to existing vehicle
+                    continue
 
                 lane = road.network.get_lane(lane_idx)
                 position = lane.position(longitudinal, 0)
-
-                # Create a dummy vehicle to test on_road status
                 test_vehicle = (vehicle_class or Vehicle)(road, position)
                 if not test_vehicle.on_road:
-                    continue  # Skip off-road placements
+                    continue
 
                 used_positions.append((lane_idx, longitudinal))
                 return lane_idx, longitudinal
 
-            # Fallback if all attempts fail
             lane_idx = lanes[self.np_random.choice(len(lanes), p=weights)]
             longitudinal = self.np_random.uniform(*x_range)
             used_positions.append((lane_idx, longitudinal))
             return lane_idx, longitudinal
 
-
         before_count = int(total * 0.7)
         after_count = total - before_count
 
-        # Controlled vehicles — always in 4-lane section
+        # Controlled vehicles in two-lane section
         for _ in range(controlled):
-            lane_id, long = sample_valid_position("four")
+            lane_id, long = sample_valid_position("two")
             lane = road.network.get_lane(lane_id)
             speed = self.np_random.uniform(25, 35)
             v = self.action_type.vehicle_class(road, lane.position(long, 0), speed=speed)
             road.vehicles.append(v)
             self.controlled_vehicles.append(v)
-        
+
         for v in self.road.vehicles:
             if not isinstance(v, ControlledVehicle):
                 lane = v.lane
                 if lane is None:
                     continue
-                # Get longitudinal and lateral coordinates of vehicle relative to lane
                 s, d = lane.local_coordinates(v.position)
-                # Clamp lateral offset to lane width boundaries (e.g., ±lane_width/2)
-                max_lateral_offset = lane.width / 2
-                if abs(d) > max_lateral_offset:
-                    d = np.clip(d, -max_lateral_offset, max_lateral_offset)
-                    # Set position back to the clamped point on lane centerline
-                    v.position = lane.position(s, d)
+                d = np.clip(d, -lane.width / 2, lane.width / 2)
+                v.position = lane.position(s, d)
 
-        # Other vehicles before merge
+        # Other vehicles in two-lane section
         for _ in range(before_count - controlled):
-            lane_id, long = sample_valid_position("four")
+            lane_id, long = sample_valid_position("two")
             lane = road.network.get_lane(lane_id)
             speed = self.np_random.uniform(20, 35)
             v = other_type(road, lane.position(long, 0), speed=speed)
             v.randomize_behavior()
             road.vehicles.append(v)
 
-        # Other vehicles after merge
+        # Other vehicles in one-lane section
         for _ in range(after_count):
             lane_id, long = sample_valid_position("after")
             lane = road.network.get_lane(lane_id)
@@ -281,3 +253,13 @@ class MultiMergeEnv(AbstractEnv):
             v = other_type(road, lane.position(long, 0), speed=speed)
             v.randomize_behavior()
             road.vehicles.append(v)
+
+        for v in road.vehicles:
+            if isinstance(v, ControlledVehicle):
+                continue
+            lane = v.lane
+            if lane is None:
+                continue
+            s, d = lane.local_coordinates(v.position)
+            d = np.clip(d, -lane.width / 2, lane.width / 2)
+            v.position = lane.position(s, d)

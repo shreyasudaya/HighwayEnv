@@ -1,88 +1,73 @@
-import gymnasium as gym
-from gymnasium.envs.registration import register
 import highway_env
-import numpy as np
-import torch
-
+import gymnasium as gym
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import EvalCallback
+import torch.nn as nn
 
-
-
-# --- 2. Training Config ---
-TOTAL_TIMESTEPS = 5_000
-MODEL_PATH = "ppo_multimerge.zip"
-VIDEO_DIR = "./videos"
-
-# --- 3. Create the environment ---
 def make_env():
-    env = gym.make(
-        "multimerge-v0",
-        render_mode=None,
-        config={
-            "controlled_vehicles": 10,
-            "vehicles_count": 40,
-        },
-    )
+    env = gym.make("zippermerge-v0")  # register your env as 'lane_drop_merge-v0'
     return env
 
-# Vectorized for SB3
-env = DummyVecEnv([make_env])
+class CustomPolicy(nn.Module):
+    def __init__(self, observation_space, action_space):
+        super().__init__()
+        input_dim = observation_space.shape[0]
+        output_dim = action_space.n  # 4 actions: acc, dec, keep, LC
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+        )
+        self.action_head = nn.Linear(128, output_dim)
+        self.value_head = nn.Linear(128, 1)
 
-# --- 4. Define the PPO agent ---
-model = PPO(
-    "MlpPolicy",
-    env,
-    verbose=1,
-    learning_rate=3e-4,
-    n_steps=2048,
-    batch_size=64,
-    ent_coef=0.01,
-    gamma=0.99,
-    gae_lambda=0.95,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    tensorboard_log="./ppo_multimerge_tb/",
-)
+    def forward(self, x):
+        features = self.net(x)
+        action_logits = self.action_head(features)
+        value = self.value_head(features)
+        return action_logits, value
 
-# --- 5. Optional: Checkpoint every 50k steps ---
-checkpoint_callback = CheckpointCallback(
-    save_freq=50_000,
-    save_path="./checkpoints/",
-    name_prefix="ppo_multimerge"
-)
+from stable_baselines3.common.policies import ActorCriticPolicy
 
-# --- 6. Train the agent ---
-model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=checkpoint_callback)
-model.save(MODEL_PATH)
-print(f"Model saved to {MODEL_PATH}")
-
-# --- 7. Record a demo video after training ---
-def record_video(model, video_length=300, filename="ppo_multimerge_demo.mp4"):
-    # IMPORTANT: use render_mode="rgb_array" for recording
-    def make_render_env():
-        return gym.make(
-            "multimerge-v0",
-            render_mode="rgb_array",  # Required for VecVideoRecorder
-            config={
-                "controlled_vehicles": 5,
-                "vehicles_count": 10,
-            },
+class CustomActorCriticPolicy(ActorCriticPolicy):
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            *args,
+            **kwargs,
+            net_arch=[dict(pi=[128, 128, 128], vf=[128, 128, 128])],
+            activation_fn=nn.Tanh,
         )
 
-    video_env = DummyVecEnv([make_render_env])
-    video_env = VecVideoRecorder(
-        video_env, VIDEO_DIR, record_video_trigger=lambda x: x == 0,
-        video_length=video_length, name_prefix="multimerge_eval"
+def train():
+    env = make_env()
+    eval_env = make_env()
+
+    model = PPO(
+        "MlpPolicy",
+        env,
+        policy=CustomActorCriticPolicy,
+        learning_rate=1e-3,
+        batch_size=8192,
+        n_epochs=5,
+        gamma=0.99,
+        verbose=1,
+        tensorboard_log="./ppo_lanedrop_tensorboard/",
     )
 
-    obs = video_env.reset()
-    for _ in range(video_length):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, info = video_env.step(action)
-        if done.any():
-            break
-    video_env.close()
-    print(f"Video saved to {VIDEO_DIR}/{filename}")
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path="./logs/best_model",
+        log_path="./logs/results",
+        eval_freq=10000,
+        n_eval_episodes=10,
+        deterministic=True,
+        render=False,
+    )
 
-record_video(model)
+    model.learn(total_timesteps=5_000_000, callback=eval_callback)
+
+if __name__ == "__main__":
+    train()

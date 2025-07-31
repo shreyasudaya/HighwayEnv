@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+*.png
 
 # Distribution / packaging
 .Python
@@ -149,6 +150,7 @@ jupyter_execute
 racetrack_oval_ppo/
 ppo_multimerge_tb/
 dql_multimerge_tb/
+ppo_lanedropmerge_tb/
 
 videos/
 *.mp4
