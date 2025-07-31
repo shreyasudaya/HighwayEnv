@@ -149,7 +149,7 @@ jupyter_execute
 
 racetrack_oval_ppo/
 ppo_multimerge_tb/
-dql_multimerge_tb/
+dqn_multimerge_tb/
 ppo_lanedropmerge_tb/
 
 videos/
