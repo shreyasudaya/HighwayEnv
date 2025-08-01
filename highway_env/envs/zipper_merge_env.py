@@ -24,21 +24,43 @@ class LaneDropMergeEnv(AbstractEnv):
         cfg = super().default_config()
         cfg.update(
             {
+                "observation": {
+                    "type": "Kinematics",
+                    "vehicles_count": 15,
+                    "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+                    "features_range": {
+                        "x": [-100, 100],
+                        "y": [-100, 100],
+                        "vx": [-30, 30],
+                        "vy": [-30, 30],
+                    },
+                    "absolute": True,
+                    "flatten": False,
+                    "observe_intentions": False,
+                },
+                "action": {
+                    "type": "DiscreteMetaAction",
+                    "longitudinal": True,
+                    "lateral": True,
+                    "target_speeds": [15, 25, 30],
+                },
                 "vehicles_count": 15,
                 "controlled_vehicles": 3,
+                "duration": 20,
+                "spawn_probability": 0.5,
+                "show_trajectories": False,
+                "offroad_terminal": False,
+                "screen_width": 1600,
+                "screen_height": 400,
+                "centering_position": [0.3, 0.5],
+                "scaling": 4.5,
                 "collision_reward": -1,
                 "right_lane_reward": 0.1,
                 "high_speed_reward": 0.2,
-                "reward_speed_range": [20, 30],
+                "reward_speed_range": [25, 30],
                 "merging_speed_reward": -0.5,
                 "lane_change_reward": -0.05,
-                "other_vehicles_type": "highway_env.vehicle.behavior.IDMVehicle",
-                "screen_width": 1600,
-                "screen_height": 400,
-                "centering_position": [0.3, 0.5],  # Center screen on road, not ego
-                "scaling": 4.5,  # Lower scaling => zoomed out (default ~5.5)
-                "show_trajectories": False,
-                "offroad_terminal": False,
+                "off_road_reward": -2.0,
             }
         )
         return cfg
@@ -222,7 +244,7 @@ class LaneDropMergeEnv(AbstractEnv):
         for _ in range(controlled):
             lane_id, long = sample_valid_position("two")
             lane = road.network.get_lane(lane_id)
-            speed = self.np_random.uniform(25, 35)
+            speed = self.np_random.uniform(25, 30)
             v = self.action_type.vehicle_class(road, lane.position(long, 0), speed=speed)
             road.vehicles.append(v)
             self.controlled_vehicles.append(v)
@@ -240,7 +262,7 @@ class LaneDropMergeEnv(AbstractEnv):
         for _ in range(before_count - controlled):
             lane_id, long = sample_valid_position("two")
             lane = road.network.get_lane(lane_id)
-            speed = self.np_random.uniform(20, 35)
+            speed = self.np_random.uniform(25, 30)
             v = other_type(road, lane.position(long, 0), speed=speed)
             v.randomize_behavior()
             road.vehicles.append(v)
@@ -249,7 +271,7 @@ class LaneDropMergeEnv(AbstractEnv):
         for _ in range(after_count):
             lane_id, long = sample_valid_position("after")
             lane = road.network.get_lane(lane_id)
-            speed = self.np_random.uniform(20, 35)
+            speed = self.np_random.uniform(25, 30)
             v = other_type(road, lane.position(long, 0), speed=speed)
             v.randomize_behavior()
             road.vehicles.append(v)
@@ -263,3 +285,32 @@ class LaneDropMergeEnv(AbstractEnv):
             s, d = lane.local_coordinates(v.position)
             d = np.clip(d, -lane.width / 2, lane.width / 2)
             v.position = lane.position(s, d)
+
+
+class MultiAgentLaneDropMergeEnv(LaneDropMergeEnv):
+    @classmethod
+    def default_config(cls) -> dict:
+        config = super().default_config()
+        config.update(
+            {
+                "action": {
+                    "type": "MultiAgentAction",
+                    "action_config": {
+                        "type": "DiscreteMetaAction",
+                        "lateral": True,
+                        "longitudinal": True,
+                        "target_speeds": [15, 25, 30],
+                    },
+                },
+                "observation": {
+                    "type": "MultiAgentObservation",
+                    "observation_config": {
+                        "type": "Kinematics",
+                        "vehicles_count": 10,
+                        "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+                    },
+                },
+                "controlled_vehicles": 3,
+            }
+        )
+        return config

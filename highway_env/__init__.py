@@ -81,6 +81,11 @@ def _register_highway_envs():
     entry_point="highway_env.envs.zipper_merge_env:LaneDropMergeEnv",
     )
 
+    register(
+    id="multizippermerge-v0",
+    entry_point="highway_env.envs.zipper_merge_env:MultiAgentLaneDropMergeEnv",
+    )
+
     # parking_env.py
     register(
         id="parking-v0",

@@ -26,6 +26,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+logs/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -154,3 +155,5 @@ ppo_lanedropmerge_tb/
 
 videos/
 *.mp4
+__pycache__/
+*.pyc

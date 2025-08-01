@@ -1,36 +1,64 @@
-import gymnasium  
+import gymnasium as gym
 import highway_env
-import matplotlib.pyplot as plt
-env = gymnasium.make(
-  "zippermerge-v0",
+from pathlib import Path
+import cv2
+import numpy as np
+
+def collect_frames(env, steps=300, num_episodes=5):
+    all_frames = []
+
+    for ep in range(num_episodes):
+        obs, info = env.reset(seed=ep)
+        done, truncated = False, False
+        print(f"Recording episode {ep + 1}...")
+
+        for _ in range(steps):
+            if hasattr(env, "controlled_vehicles") and len(env.controlled_vehicles) > 1:
+                action = [env.action_space.sample() for _ in env.controlled_vehicles]
+            else:
+                action = env.action_space.sample()
+
+            obs, reward, done, truncated, info = env.step(action)
+            frame = env.render()
+            all_frames.append(frame)
+
+            if done or truncated:
+                break
+
+    return all_frames
+
+def save_video(frames, video_path="multimerge_combined.mp4", fps=5):
+    if not frames:
+        print("No frames to save.")
+        return None
+
+    height, width, _ = frames[0].shape
+    frame_size = (width, height)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+    out = cv2.VideoWriter(video_path, fourcc, fps, frame_size)
+    if not out.isOpened():
+        print("Failed to open VideoWriter.")
+        return None
+
+    for frame in frames:
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame_bgr)
+
+    out.release()
+    print(f"Combined video saved to: {video_path}")
+    return video_path
+
+env = gym.make(
+  "multizippermerge-v0",
   render_mode="rgb_array",
-  config={
-    "observation": {
-      "type": "MultiAgentObservation",
-      "observation_config": {
-        "type": "Kinematics",
-      }
-    }
-  }
 )
-env.unwrapped.config.update({
-  "action": {
-    "type": "MultiAgentAction",
-    "action_config": {
-      "type": "DiscreteMetaAction",
-    }
-  }
-})
 env.reset()
 
-_, (ax1, ax2) = plt.subplots(nrows=2)
-ax1.imshow(env.render())
-ax1.set_title("Initial state")
+# Collect frames across episodes
+frames = collect_frames(env, steps=300, num_episodes=5)
 
-# Make the first vehicle change to the left lane, and the second one to the right
-action_1, action_2 = 0, 2  # See highway_env.envs.common.action.DiscreteMetaAction.ACTIONS_ALL
-env.step((action_1, action_2))
+# Save them as one video
+save_video(frames, video_path="multimerge_combined.mp4", fps=5)
 
-ax2.imshow(env.render())
-ax2.set_title("After sending actions to each vehicle")
-plt.show()
+env.close()
