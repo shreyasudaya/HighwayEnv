@@ -158,3 +158,4 @@ videos/
 __pycache__/
 *.pyc
 runs/
+venv_name/

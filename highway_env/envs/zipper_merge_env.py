@@ -9,7 +9,7 @@ from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.controller import ControlledVehicle
 from highway_env.vehicle.objects import Obstacle
 from highway_env.vehicle.kinematics import Vehicle
-
+from gymnasium import spaces
 class LaneDropMergeEnv(AbstractEnv):
     """
     A highway merge negotiation environment.
@@ -291,26 +291,88 @@ class MultiAgentLaneDropMergeEnv(LaneDropMergeEnv):
     @classmethod
     def default_config(cls) -> dict:
         config = super().default_config()
-        config.update(
-            {
-                "action": {
-                    "type": "MultiAgentAction",
-                    "action_config": {
-                        "type": "DiscreteMetaAction",
-                        "lateral": True,
-                        "longitudinal": True,
-                        "target_speeds": [15, 25, 30],
-                    },
+        config.update({
+            "action": {
+                "type": "MultiAgentAction",
+                "action_config": {
+                    "type": "DiscreteMetaAction",
+                    "lateral": True,
+                    "longitudinal": True,
+                    "target_speeds": [15, 25, 30],
                 },
-                "observation": {
-                    "type": "MultiAgentObservation",
-                    "observation_config": {
-                        "type": "Kinematics",
-                        "vehicles_count": 10,
-                        "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
-                    },
+            },
+            "observation": {
+                "type": "MultiAgentObservation",
+                "observation_config": {
+                    "type": "Kinematics",
+                    "vehicles_count": 10,
+                    "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
                 },
-                "controlled_vehicles": 3,
-            }
-        )
+            },
+            "controlled_vehicles": 3,
+        })
         return config
+
+    def _reward(self, action: int) -> float:
+        return sum(self._agent_reward(action, v) for v in self.controlled_vehicles) / len(self.controlled_vehicles)
+
+    def _rewards(self, action: int) -> dict[str, float]:
+        agent_rewards = [self._agent_rewards(action, v) for v in self.controlled_vehicles]
+        return {
+            k: sum(agent[k] for agent in agent_rewards) / len(agent_rewards)
+            for k in agent_rewards[0].keys()
+        }
+
+    def _agent_reward(self, action: int, vehicle: Vehicle) -> float:
+        rewards = self._agent_rewards(action, vehicle)
+        weights = {
+            "collision_reward": self.config.get("collision_reward", -1),
+            "right_lane_reward": self.config.get("right_lane_reward", 0.1),
+            "high_speed_reward": self.config.get("high_speed_reward", 0.2),
+            "lane_change_reward": self.config.get("lane_change_reward", -0.05),
+            "merging_speed_reward": self.config.get("merging_speed_reward", -0.5),
+            "off_road_reward": self.config.get("off_road_reward", -2.0),
+        }
+        return sum(weights[k] * rewards.get(k, 0) for k in rewards)
+
+    def _agent_rewards(self, action: int, vehicle: Vehicle) -> dict[str, float]:
+        scaled_speed = utils.lmap(vehicle.speed, self.config["reward_speed_range"], [0, 1])
+        collision_penalty = -10.0 if vehicle.crashed else 0.0
+        right_lane_reward = 1.0 if vehicle.lane_index[2] == 1 else 0.0
+        lane_change_penalty = -0.1 if action in [0, 2] else 0.0
+        merging_speed_penalty = sum(
+            max(0, (v.speed - vehicle.speed) / v.target_speed)
+            for v in self.road.vehicles
+            if isinstance(v, ControlledVehicle) and v is not vehicle
+        )
+        off_road_penalty = -5.0 if not vehicle.on_road else 0.0
+
+        return {
+            "collision_reward": collision_penalty,
+            "right_lane_reward": right_lane_reward,
+            "high_speed_reward": scaled_speed * 0.2,
+            "lane_change_reward": lane_change_penalty,
+            "merging_speed_reward": -merging_speed_penalty,
+            "off_road_reward": off_road_penalty,
+        }
+
+    def _is_terminated(self) -> bool:
+        return any(self._agent_is_terminal(v) for v in self.controlled_vehicles)
+
+    def _agent_is_terminal(self, vehicle: Vehicle) -> bool:
+        return vehicle.crashed or (self.config["offroad_terminal"] and not vehicle.on_road)
+
+    def _info(self, obs: np.ndarray, action: int) -> dict:
+        info = super()._info(obs, action)
+
+        # Per-agent reward and done
+        info["agents_rewards"] = tuple(self._agent_reward(action, v) for v in self.controlled_vehicles)
+        info["agents_terminated"] = tuple(self._agent_is_terminal(v) for v in self.controlled_vehicles)
+
+        # Centralized critic support: share full obs
+        if isinstance(obs, dict):  # MultiAgentObservation returns dict
+            all_obs = [obs[agent_id] for agent_id in sorted(obs.keys()) if agent_id.startswith("agent")]
+            shared_obs = np.concatenate(all_obs, axis=-1)
+            info["shared_obs"] = shared_obs
+
+        return info
